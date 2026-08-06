@@ -1,4 +1,4 @@
-import type { Campaign, InboxTriageItem, SequenceStep } from "../types/outbound";
+import type { Campaign, OutboundContact } from "../types/outbound";
 import type { GeminiDueDiligence, Lead } from "../types/inbound";
 
 export const mockLeads: Lead[] = [
@@ -34,28 +34,24 @@ export const mockCampaigns: Campaign[] = [
   {
     id: "cmp_001",
     name: "Executive Outreach - Sports Partners",
-    channel: "email",
-    status: "active",
-    owner: "Ops AI",
+    target_audience: "Sponsorship Directors and Brand Leads",
+    status: "ACTIVE",
+    sent_count: 124,
+    open_rate: 57.5,
+    reply_rate: 19.2,
+    last_activity: new Date().toISOString(),
   },
 ];
 
-export const mockSequenceSteps: SequenceStep[] = [
+export const mockOutboundContacts: OutboundContact[] = [
   {
-    id: "step_001",
-    campaignId: "cmp_001",
-    dayOffset: 0,
-    subject: "Intro + Partnership Fit",
-    bodyPreview: "Opening message with tailored market context.",
-  },
-];
-
-export const mockInboxTriage: InboxTriageItem[] = [
-  {
-    id: "triage_001",
-    from: "partnerships@northstar.example",
-    subject: "Re: Initial Partnership Concept",
-    priority: "high",
-    receivedAtIso: new Date().toISOString(),
+    id: "contact_001",
+    campaign_id: "cmp_001",
+    name: "Nia Carter",
+    company: "Northstar Capital",
+    email: "partnerships@northstar.example",
+    stage: "REPLIED",
+    last_touch: "2h ago",
+    notes: "Requested pricing packet and strategy call.",
   },
 ];
