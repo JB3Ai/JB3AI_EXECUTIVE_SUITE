@@ -18,3 +18,30 @@ export async function fetchFromAppsScript<T>(path: string, init?: RequestInit): 
 
   return (await response.json()) as T;
 }
+
+export {
+  createGoogleCalendarEvent,
+  deleteGoogleCalendarEvent,
+  listGoogleCalendarEvents,
+} from "../components/inbound/lib/googleCalendar";
+export type { CalendarEventInput, GoogleCalendarEvent } from "../components/inbound/lib/googleCalendar";
+
+export {
+  appendLeadToGoogleSheet,
+  createGoogleSheet,
+  exportLeadsToGoogleSheet,
+  importLeadsFromGoogleSheet,
+  listUserGoogleSheets,
+} from "../components/inbound/lib/googleSheets";
+export type { GoogleSpreadsheetItem } from "../components/inbound/lib/googleSheets";
+
+export {
+  checkInboxForReplies,
+  fetchGmailProfile,
+  sendGmailEmail,
+} from "../components/outbound/lib/gmail";
+export type {
+  GmailProfile,
+  IncomingReplyMatch,
+  SendEmailPayload,
+} from "../components/outbound/lib/gmail";

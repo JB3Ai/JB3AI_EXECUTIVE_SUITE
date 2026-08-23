@@ -1,261 +1,522 @@
-import { useMemo, useState } from "react";
-import {
-  Send,
-  Mail,
-  Play,
-  Pause,
-  Plus,
-  Search,
-  TrendingUp,
-  BarChart3,
-  UserCheck,
-  Clock,
-  ArrowUpRight,
-} from "lucide-react";
-import type { Campaign, OutboundContact } from "../../types/outbound";
+import React, { useState, useEffect } from 'react';
+import { User } from 'firebase/auth';
+import { 
+  Contact, 
+  Template, 
+  Campaign, 
+  Thread, 
+  QueueItem, 
+  ThreadStatus, 
+  SuggestedActionType 
+} from '../../types/outbound';
+import { 
+  initialContacts, 
+  initialTemplates, 
+  initialCampaign, 
+  initialThreads 
+} from './data/mockData';
+import { 
+  initAuth, 
+  googleSignIn, 
+  logout, 
+  getAccessToken 
+} from './lib/auth';
+import { 
+  sendGmailEmail, 
+  checkInboxForReplies 
+} from './lib/gmail';
 
-const MOCK_CAMPAIGNS: Campaign[] = [
-  {
-    id: "camp-01",
-    name: "Sponsorship Outreach - Q3 Enterprise",
-    target_audience: "VP of Engineering / AI Leads",
-    status: "ACTIVE",
-    sent_count: 142,
-    open_rate: 68.4,
-    reply_rate: 22.1,
-    last_activity: new Date().toISOString(),
-  },
-  {
-    id: "camp-02",
-    name: "Consulting Advisory - AI Strategy",
-    target_audience: "Mid-Market Founders & CTOs",
-    status: "PAUSED",
-    sent_count: 89,
-    open_rate: 54.2,
-    reply_rate: 11.5,
-    last_activity: new Date(Date.now() - 86400000).toISOString(),
-  },
-];
-
-const MOCK_CONTACTS: OutboundContact[] = [
-  {
-    id: "cont-101",
-    campaign_id: "camp-01",
-    name: "David Miller",
-    company: "Apex Digital Solutions",
-    email: "d.miller@apexdigital.com",
-    stage: "REPLIED",
-    last_touch: "2 hours ago",
-    notes: "Requested call to discuss enterprise sponsorship pricing.",
-  },
-  {
-    id: "cont-102",
-    campaign_id: "camp-01",
-    name: "Elena Rostova",
-    company: "Vanguard Systems",
-    email: "elena@vanguard.io",
-    stage: "OPENED",
-    last_touch: "5 hours ago",
-    notes: "Opened email 3 times.",
-  },
-];
+import { Header } from './Header';
+import { TrafficLightBoard } from './TrafficLightBoard';
+import { OptimalWorkflowSidebar } from './OptimalWorkflowSidebar';
+import { InboxZeroView } from './InboxZeroView';
+import { TemplateManager } from './TemplateManager';
+import { ContactManager } from './ContactManager';
+import { CampaignSequencer } from './CampaignSequencer';
+import { ContactImportModal } from './ContactImportModal';
+import { ThreadDetailModal } from './ThreadDetailModal';
+import { DailyBriefModal } from './DailyBriefModal';
+import { SendConfirmationModal } from './SendConfirmationModal';
 
 export function OutboundView() {
-  const [campaigns, setCampaigns] = useState<Campaign[]>(MOCK_CAMPAIGNS);
-  const [contacts] = useState<OutboundContact[]>(MOCK_CONTACTS);
-  const [selectedCampaign, setSelectedCampaign] = useState<Campaign>(MOCK_CAMPAIGNS[0]);
-  const [query, setQuery] = useState("");
+  // Main Application State
+  const [contacts, setContacts] = useState<Contact[]>(() => {
+    const saved = localStorage.getItem('sponsorflow_contacts');
+    return saved ? JSON.parse(saved) : initialContacts;
+  });
 
-  const toggleCampaignStatus = (id: string) => {
-    setCampaigns((prev) =>
-      prev.map((campaign) => {
-        if (campaign.id === id) {
-          const nextStatus = campaign.status === "ACTIVE" ? "PAUSED" : "ACTIVE";
-          return { ...campaign, status: nextStatus };
-        }
-        return campaign;
-      }),
+  const [templates, setTemplates] = useState<Template[]>(() => {
+    const saved = localStorage.getItem('sponsorflow_templates');
+    return saved ? JSON.parse(saved) : initialTemplates;
+  });
+
+  const [campaign, setCampaign] = useState<Campaign>(initialCampaign);
+
+  const [threads, setThreads] = useState<Thread[]>(() => {
+    const saved = localStorage.getItem('sponsorflow_threads');
+    return saved ? JSON.parse(saved) : initialThreads;
+  });
+
+  const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
+
+  // Auth & Gmail API State
+  const [user, setUser] = useState<User | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // UI Navigation State
+  const [activeTab, setActiveTab] = useState<'board' | 'inbox' | 'templates' | 'contacts' | 'campaigns'>('board');
+
+  // Modal Control States
+  const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
+  const [isDailyBriefOpen, setIsDailyBriefOpen] = useState<boolean>(false);
+  const [selectedDetailThread, setSelectedDetailThread] = useState<Thread | null>(null);
+
+  // Send Confirmation Dialog State (Mandatory Workspace Integration Rule)
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    threadId: string;
+    recipientEmail: string;
+    subject: string;
+    bodyText: string;
+    markMeetingBooked?: boolean;
+  }>({
+    isOpen: false,
+    threadId: '',
+    recipientEmail: '',
+    subject: '',
+    bodyText: '',
+  });
+
+  // Save to local storage on state updates
+  useEffect(() => {
+    localStorage.setItem('sponsorflow_contacts', JSON.stringify(contacts));
+  }, [contacts]);
+
+  useEffect(() => {
+    localStorage.setItem('sponsorflow_templates', JSON.stringify(templates));
+  }, [templates]);
+
+  useEffect(() => {
+    localStorage.setItem('sponsorflow_threads', JSON.stringify(threads));
+  }, [threads]);
+
+  // Auth initialization
+  useEffect(() => {
+    initAuth(
+      (u, token) => {
+        setUser(u);
+        setAccessToken(token);
+      },
+      () => {
+        setUser(null);
+        setAccessToken(null);
+      }
+    );
+  }, []);
+
+  // Handle Google Sign In
+  const handleLogin = async () => {
+    try {
+      const res = await googleSignIn();
+      if (res) {
+        setUser(res.user);
+        setAccessToken(res.accessToken);
+        handleSyncInbox(res.accessToken);
+      }
+    } catch (err) {
+      console.error('Google Auth Failed:', err);
+    }
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setUser(null);
+    setAccessToken(null);
+  };
+
+  // Sync Inbox with Gmail API
+  const handleSyncInbox = async (tokenOverride?: string) => {
+    const token = tokenOverride || accessToken;
+    if (!token) {
+      console.log('No access token available for Gmail API sync. Run in simulation mode.');
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      const knownEmails = contacts.map((c) => c.email);
+      const incomingReplies = await checkInboxForReplies(token, knownEmails);
+
+      if (incomingReplies.length > 0) {
+        setThreads((prevThreads) =>
+          prevThreads.map((thread) => {
+            const contact = contacts.find((c) => c.id === thread.contact_id);
+            if (!contact) return thread;
+
+            const match = incomingReplies.find(
+              (r) => r.fromEmail.toLowerCase() === contact.email.toLowerCase()
+            );
+
+            if (match) {
+              const alreadyHas = thread.history.some((h) => h.id === match.messageId);
+              if (!alreadyHas) {
+                const newMsg = {
+                  id: match.messageId,
+                  direction: 'inbound' as const,
+                  sender: match.fromEmail,
+                  recipient: 'sponsor@jb3ai.com',
+                  subject: match.subject,
+                  body: match.snippet,
+                  timestamp: match.date,
+                };
+
+                return {
+                  ...thread,
+                  status: 'replied' as ThreadStatus,
+                  reply_detected: true,
+                  sentiment: 'positive' as const,
+                  next_action_suggested: 'send-calendly' as SuggestedActionType,
+                  last_activity: match.date,
+                  history: [...thread.history, newMsg],
+                };
+              }
+            }
+            return thread;
+          })
+        );
+      }
+    } catch (err) {
+      console.error('Error syncing Gmail inbox:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Status updates
+  const handleUpdateThreadStatus = (threadId: string, newStatus: ThreadStatus) => {
+    setThreads((prev) =>
+      prev.map((t) => (t.id === threadId ? { ...t, status: newStatus, last_activity: new Date().toISOString() } : t))
     );
   };
 
-  const filteredContacts = useMemo(() => {
-    const current = contacts.filter((contact) => contact.campaign_id === selectedCampaign.id);
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) {
-      return current;
-    }
-    return current.filter((contact) => {
-      return (
-        contact.name.toLowerCase().includes(normalized) ||
-        contact.company.toLowerCase().includes(normalized) ||
-        contact.email.toLowerCase().includes(normalized) ||
-        contact.stage.toLowerCase().includes(normalized)
-      );
+  // Handle Contact Import
+  const handleImportContacts = (newContactList: Omit<Contact, 'id' | 'created_at'>[]) => {
+    const createdContacts: Contact[] = [];
+    const createdThreads: Thread[] = [];
+
+    newContactList.forEach((nc, idx) => {
+      const cId = `c_${Date.now()}_${idx}`;
+      const newC: Contact = {
+        ...nc,
+        id: cId,
+        created_at: new Date().toISOString(),
+      };
+      createdContacts.push(newC);
+
+      const thId = `th_${Date.now()}_${idx}`;
+      const newTh: Thread = {
+        id: thId,
+        contact_id: cId,
+        campaign_id: campaign.id,
+        status: 'draft',
+        last_activity: new Date().toISOString(),
+        reply_detected: false,
+        next_action_suggested: 'send-follow-up',
+        suggested_reason: 'Draft initialized. Pending queueing.',
+        suggested_template_id: 't1',
+        history: [],
+        follow_up_count: 0,
+      };
+      createdThreads.push(newTh);
     });
-  }, [contacts, selectedCampaign.id, query]);
+
+    setContacts((prev) => [...prev, ...createdContacts]);
+    setThreads((prev) => [...prev, ...createdThreads]);
+  };
+
+  // Delete Contact
+  const handleDeleteContact = (contactId: string) => {
+    setContacts((prev) => prev.filter((c) => c.id !== contactId));
+    setThreads((prev) => prev.filter((t) => t.contact_id !== contactId));
+  };
+
+  // Save/Delete Template
+  const handleSaveTemplate = (tpl: Template) => {
+    setTemplates((prev) => {
+      const exists = prev.some((t) => t.id === tpl.id);
+      if (exists) {
+        return prev.map((t) => (t.id === tpl.id ? tpl : t));
+      }
+      return [...prev, tpl];
+    });
+  };
+
+  const handleDeleteTemplate = (templateId: string) => {
+    setTemplates((prev) => prev.filter((t) => t.id !== templateId));
+  };
+
+  // Trigger Send Confirmation Modal
+  const requestSendConfirmation = (
+    threadId: string,
+    templateId?: string,
+    customBody?: string,
+    markMeetingBooked: boolean = false
+  ) => {
+    const thread = threads.find((t) => t.id === threadId);
+    if (!thread) return;
+
+    const contact = contacts.find((c) => c.id === thread.contact_id);
+    if (!contact) return;
+
+    const tpl = templates.find((t) => t.id === (templateId || thread.suggested_template_id || 't1'));
+
+    let subject = tpl
+      ? tpl.subject_line
+          .replace(/{{first_name}}/g, contact.name.split(' ')[0])
+          .replace(/{{company}}/g, contact.company)
+          .replace(/{{program}}/g, contact.program)
+      : `Isikolo AI x ${contact.company}`;
+
+    let body = customBody;
+    if (!body && tpl) {
+      body = tpl.body_text
+        .replace(/{{first_name}}/g, contact.name.split(' ')[0])
+        .replace(/{{company}}/g, contact.company)
+        .replace(/{{program}}/g, contact.program)
+        .replace(/{{my_calendly_link}}/g, 'https://calendly.com/sponsor-jb3ai/15min')
+        .replace(/{{days_since_sent}}/g, '3')
+        .replace(/{{custom_snippet}}/g, contact.notes || 'Strategic partnership for AI education.');
+    }
+
+    setConfirmConfig({
+      isOpen: true,
+      threadId,
+      recipientEmail: contact.email,
+      subject,
+      bodyText: body || 'Outreach email body',
+      markMeetingBooked,
+    });
+  };
+
+  // Executing Confirmed Email Send
+  const executeConfirmedSend = async () => {
+    const { threadId, recipientEmail, subject, bodyText, markMeetingBooked } = confirmConfig;
+    if (!threadId) return;
+
+    // Send via Gmail API if token available
+    let gMessageId = `gm_msg_${Date.now()}`;
+    if (accessToken) {
+      try {
+        const sendRes = await sendGmailEmail(accessToken, {
+          to: recipientEmail,
+          subject,
+          bodyHtml: bodyText.replace(/\n/g, '<br>'),
+          bodyText,
+        });
+        if (sendRes?.id) {
+          gMessageId = sendRes.id;
+        }
+      } catch (err) {
+        console.error('Gmail API send error:', err);
+      }
+    }
+
+    // Add outbound email log & update thread status
+    setThreads((prevThreads) =>
+      prevThreads.map((t) => {
+        if (t.id === threadId) {
+          const newLog = {
+            id: gMessageId,
+            direction: 'outbound' as const,
+            sender: 'sponsor@jb3ai.com',
+            recipient: recipientEmail,
+            subject,
+            body: bodyText,
+            timestamp: new Date().toISOString(),
+          };
+
+          const newStatus: ThreadStatus = markMeetingBooked
+            ? 'meeting-booked'
+            : t.status === 'draft' || t.status === 'queued'
+            ? 'sent'
+            : 'waiting';
+
+          return {
+            ...t,
+            status: newStatus,
+            last_activity: new Date().toISOString(),
+            sentiment: markMeetingBooked ? ('positive' as const) : t.sentiment,
+            history: [...t.history, newLog],
+            follow_up_count: t.follow_up_count + 1,
+          };
+        }
+        return t;
+      })
+    );
+
+    setConfirmConfig((prev) => ({ ...prev, isOpen: false }));
+  };
+
+  // Snooze thread
+  const handleSnoozeThread = (threadId: string) => {
+    setThreads((prev) =>
+      prev.map((t) => (t.id === threadId ? { ...t, last_activity: new Date().toISOString() } : t))
+    );
+  };
+
+  // Close thread
+  const handleCloseThread = (threadId: string) => {
+    handleUpdateThreadStatus(threadId, 'closed');
+  };
+
+  // Process next queue step in campaign sequencer
+  const handleProcessNextQueueStep = () => {
+    const queuedThread = threads.find((t) => t.status === 'queued' || t.status === 'draft');
+    if (queuedThread) {
+      requestSendConfirmation(queuedThread.id);
+    }
+  };
+
+  // Batch execute followups from Daily Brief
+  const handleBatchExecuteFollowups = () => {
+    const followupsReady = threads.filter((t) => t.status === 'waiting' && t.sentiment === 'needs-follow-up');
+    if (followupsReady.length > 0) {
+      requestSendConfirmation(followupsReady[0].id);
+    }
+  };
+
+  const repliesCount = threads.filter((t) => t.status === 'replied' || t.status === 'meeting-booked').length;
+  const followupsCount = threads.filter((t) => t.status === 'waiting' && t.sentiment === 'needs-follow-up').length;
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl">
-          <div className="flex justify-between items-center text-neutral-400 text-xs font-medium">
-            <span>ACTIVE CAMPAIGNS</span>
-            <Send className="w-4 h-4 text-amber-500" />
-          </div>
-          <div className="text-2xl font-bold text-white mt-2">{campaigns.filter((campaign) => campaign.status === "ACTIVE").length}</div>
-          <div className="text-xs text-neutral-500 mt-1">Sequence engine active</div>
-        </div>
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+      {/* Navbar Header */}
+      <Header
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        user={user}
+        accessToken={accessToken}
+        onLogin={handleLogin}
+        onLogout={handleLogout}
+        onSyncInbox={() => handleSyncInbox()}
+        isSyncing={isSyncing}
+        onOpenDailyBrief={() => setIsDailyBriefOpen(true)}
+        repliesCount={repliesCount}
+        followupsCount={followupsCount}
+      />
 
-        <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl">
-          <div className="flex justify-between items-center text-neutral-400 text-xs font-medium">
-            <span>TOTAL EMAILS SENT</span>
-            <Mail className="w-4 h-4 text-sky-500" />
-          </div>
-          <div className="text-2xl font-bold text-white mt-2">{campaigns.reduce((accumulator, current) => accumulator + current.sent_count, 0)}</div>
-          <div className="text-xs text-emerald-400 mt-1">+14% vs last week</div>
-        </div>
-
-        <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl">
-          <div className="flex justify-between items-center text-neutral-400 text-xs font-medium">
-            <span>AVG OPEN RATE</span>
-            <TrendingUp className="w-4 h-4 text-emerald-500" />
-          </div>
-          <div className="text-2xl font-bold text-white mt-2">61.3%</div>
-          <div className="text-xs text-neutral-500 mt-1">Benchmark: 45%</div>
-        </div>
-
-        <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl">
-          <div className="flex justify-between items-center text-neutral-400 text-xs font-medium">
-            <span>RESPONSE CONVERSIONS</span>
-            <UserCheck className="w-4 h-4 text-fuchsia-500" />
-          </div>
-          <div className="text-2xl font-bold text-white mt-2">16.8%</div>
-          <div className="text-xs text-emerald-400 mt-1">High conversion batch</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-6 bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-neutral-800 flex justify-between items-center">
-            <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center space-x-2">
-              <BarChart3 className="w-4 h-4 text-amber-500" />
-              <span>SponcerFlow Sequences</span>
-            </h3>
-            <button className="flex items-center space-x-1 text-xs bg-amber-500 text-black px-3 py-1.5 rounded-lg font-semibold hover:bg-amber-400 transition-colors">
-              <Plus className="w-3.5 h-3.5" />
-              <span>New Sequence</span>
-            </button>
-          </div>
-
-          <div className="divide-y divide-neutral-800 overflow-y-auto max-h-[600px]">
-            {campaigns.map((campaign) => (
-              <div
-                key={campaign.id}
-                onClick={() => setSelectedCampaign(campaign)}
-                className={`p-4 cursor-pointer transition-colors space-y-3 ${
-                  selectedCampaign.id === campaign.id ? "bg-amber-500/10 border-l-4 border-amber-500" : "hover:bg-neutral-800/50"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold text-sm text-white">{campaign.name}</div>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleCampaignStatus(campaign.id);
-                    }}
-                    className={`p-1.5 rounded-lg border text-xs flex items-center space-x-1 ${
-                      campaign.status === "ACTIVE"
-                        ? "bg-emerald-950 text-emerald-400 border-emerald-800 hover:bg-emerald-900"
-                        : "bg-neutral-800 text-neutral-400 border-neutral-700 hover:bg-neutral-700"
-                    }`}
-                  >
-                    {campaign.status === "ACTIVE" ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                    <span>{campaign.status}</span>
-                  </button>
-                </div>
-
-                <div className="text-xs text-neutral-400">{campaign.target_audience}</div>
-
-                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-neutral-800/60 text-center font-mono text-xs">
-                  <div className="bg-neutral-950 p-2 rounded border border-neutral-800">
-                    <div className="text-neutral-500 text-[10px]">SENT</div>
-                    <div className="text-white font-bold">{campaign.sent_count}</div>
-                  </div>
-                  <div className="bg-neutral-950 p-2 rounded border border-neutral-800">
-                    <div className="text-neutral-500 text-[10px]">OPEN %</div>
-                    <div className="text-emerald-400 font-bold">{campaign.open_rate}%</div>
-                  </div>
-                  <div className="bg-neutral-950 p-2 rounded border border-neutral-800">
-                    <div className="text-neutral-500 text-[10px]">REPLY %</div>
-                    <div className="text-amber-400 font-bold">{campaign.reply_rate}%</div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="lg:col-span-6 bg-neutral-900 border border-neutral-800 rounded-xl p-6 flex flex-col space-y-4">
-          <div className="border-b border-neutral-800 pb-4 flex justify-between items-start">
-            <div>
-              <h3 className="text-base font-bold text-white">{selectedCampaign.name}</h3>
-              <p className="text-xs text-neutral-400 mt-0.5">Active Contact Triage & Open Activity</p>
+      {/* Main Tab Content */}
+      <main className="flex-1 flex overflow-hidden">
+        {activeTab === 'board' && (
+          <div className="flex-1 flex overflow-hidden">
+            <div className="flex-1 overflow-hidden">
+              <TrafficLightBoard
+                threads={threads}
+                contacts={contacts}
+                templates={templates}
+                onUpdateThreadStatus={handleUpdateThreadStatus}
+                onSendEmailNow={(thId, tplId, body) => requestSendConfirmation(thId, tplId, body)}
+                onOpenThreadDetail={(th) => setSelectedDetailThread(th)}
+                onOpenImportModal={() => setIsImportModalOpen(true)}
+              />
             </div>
-            <span className="text-xs font-mono text-neutral-400 bg-neutral-950 px-2.5 py-1 rounded border border-neutral-800">
-              ID: {selectedCampaign.id}
-            </span>
+
+            <div className="hidden lg:block">
+              <OptimalWorkflowSidebar
+                threads={threads}
+                contacts={contacts}
+                templates={templates}
+                onExecuteAction={(thId, tplId) => requestSendConfirmation(thId, tplId)}
+                onSnoozeThread={handleSnoozeThread}
+                onCloseThread={handleCloseThread}
+              />
+            </div>
           </div>
+        )}
 
-          <label className="relative block">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-neutral-500" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search contacts, company, email, or stage"
-              className="w-full rounded-lg border border-neutral-800 bg-neutral-950 pl-9 pr-3 py-2 text-xs text-neutral-200 placeholder:text-neutral-500 outline-none focus:border-amber-500"
-            />
-          </label>
+        {activeTab === 'inbox' && (
+          <InboxZeroView
+            threads={threads}
+            contacts={contacts}
+            templates={templates}
+            onReplyToContact={(thId, replyText, markMeetingBooked) =>
+              requestSendConfirmation(thId, undefined, replyText, markMeetingBooked)
+            }
+            onOpenThreadDetail={(th) => setSelectedDetailThread(th)}
+          />
+        )}
 
-          <div className="space-y-3 overflow-y-auto max-h-[500px]">
-            {filteredContacts.map((contact) => (
-              <div key={contact.id} className="bg-neutral-950 border border-neutral-800 p-4 rounded-lg space-y-2">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="font-semibold text-sm text-white">{contact.name}</div>
-                    <div className="text-xs text-neutral-400">
-                      {contact.company} - <span className="font-mono">{contact.email}</span>
-                    </div>
-                  </div>
-                  <span
-                    className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-                      contact.stage === "REPLIED"
-                        ? "bg-amber-950 text-amber-400 border-amber-800"
-                        : "bg-neutral-900 text-neutral-400 border-neutral-800"
-                    }`}
-                  >
-                    {contact.stage}
-                  </span>
-                </div>
+        {activeTab === 'templates' && (
+          <TemplateManager
+            templates={templates}
+            onSaveTemplate={handleSaveTemplate}
+            onDeleteTemplate={handleDeleteTemplate}
+          />
+        )}
 
-                {contact.notes && (
-                  <p className="text-xs text-neutral-300 bg-neutral-900 p-2 rounded border border-neutral-800/80">{contact.notes}</p>
-                )}
+        {activeTab === 'contacts' && (
+          <ContactManager
+            contacts={contacts}
+            onOpenImportModal={() => setIsImportModalOpen(true)}
+            onDeleteContact={handleDeleteContact}
+          />
+        )}
 
-                <div className="flex justify-between items-center text-[10px] text-neutral-500 pt-1">
-                  <span className="flex items-center space-x-1">
-                    <Clock className="w-3 h-3" />
-                    <span>Last Activity: {contact.last_touch}</span>
-                  </span>
-                  <button className="text-amber-500 hover:underline flex items-center space-x-0.5">
-                    <span>Open Thread</span>
-                    <ArrowUpRight className="w-3 h-3" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+        {activeTab === 'campaigns' && (
+          <CampaignSequencer
+            campaign={campaign}
+            threads={threads}
+            contacts={contacts}
+            queueItems={queueItems}
+            onToggleCampaignStatus={(st) => setCampaign((prev) => ({ ...prev, status: st }))}
+            onUpdateThrottle={(thr, del) =>
+              setCampaign((prev) => ({ ...prev, throttle_per_hour: thr, random_delay_range: del }))
+            }
+            onProcessQueueStep={handleProcessNextQueueStep}
+          />
+        )}
+      </main>
+
+      {/* Modals & Dialogs */}
+      <ContactImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        existingContacts={contacts}
+        onImportContacts={handleImportContacts}
+        accessToken={accessToken}
+      />
+
+      <DailyBriefModal
+        isOpen={isDailyBriefOpen}
+        onClose={() => setIsDailyBriefOpen(false)}
+        threads={threads}
+        contacts={contacts}
+        onOpenInbox={() => setActiveTab('inbox')}
+        onBatchExecuteFollowups={handleBatchExecuteFollowups}
+      />
+
+      <ThreadDetailModal
+        thread={selectedDetailThread}
+        onClose={() => setSelectedDetailThread(null)}
+        contacts={contacts}
+        templates={templates}
+        onUpdateStatus={handleUpdateThreadStatus}
+        onSendEmailInThread={(thId, tplId, body) => {
+          setSelectedDetailThread(null);
+          requestSendConfirmation(thId, tplId, body);
+        }}
+      />
+
+      <SendConfirmationModal
+        isOpen={confirmConfig.isOpen}
+        onClose={() => setConfirmConfig((prev) => ({ ...prev, isOpen: false }))}
+        onConfirm={executeConfirmedSend}
+        title="Confirm Gmail Outreach Dispatch"
+        recipientEmail={confirmConfig.recipientEmail}
+        subject={confirmConfig.subject}
+        bodySnippet={confirmConfig.bodyText}
+      />
     </div>
   );
 }
