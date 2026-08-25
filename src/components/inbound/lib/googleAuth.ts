@@ -9,17 +9,39 @@ import {
   User 
 } from 'firebase/auth';
 
+// Fallback Firebase config to prevent crashes when API keys are missing
 const firebaseConfig: FirebaseOptions = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDummyKeyToPreventCrash123456789",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1234567890:web:abcdef123456",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "jb3ai-executive-suite.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "jb3ai-executive-suite",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "jb3ai-executive-suite.appspot.com",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
 };
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+// Initialize Firebase safely wrapped in try-catch
+let app;
+let auth: any = null;
+
+try {
+  if (!getApps().length) {
+    app = initializeApp(firebaseConfig);
+  } else {
+    app = getApps()[0];
+  }
+  auth = getAuth(app);
+} catch (error) {
+  console.warn("Firebase initialization skipped or running with fallback keys:", error);
+  // Create a mock auth object for development/testing
+  auth = {
+    currentUser: null,
+    onAuthStateChanged: () => () => {},
+    signInWithPopup: () => Promise.reject(new Error("Firebase not initialized")),
+    signOut: () => Promise.resolve(),
+  };
+}
+
+export { auth };
 
 const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/spreadsheets');
